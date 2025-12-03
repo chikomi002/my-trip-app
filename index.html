@@ -3,11 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ appTitle }}</title>
-     <!-- 強制指定完整網址，iPhone 才不會迷路 -->
-    <link rel="icon" href="https://chikomi002.github.io/my-trip-app/icon.JPG">
-    <link rel="apple-touch-icon" href="https://chikomi002.github.io/my-trip-app/icon.JPG">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>My Trip App</title> <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@700;900&display=swap" rel="stylesheet">
 
@@ -37,6 +33,14 @@
             min-height: 100vh;
             box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
             background-color: var(--color-cream); /* 內層使用軟奶油白 */
+        }
+
+        /* ★ 重要修正：v-cloak 
+           這個 CSS 規則會隱藏尚未編譯完成的 Vue 實例。
+           防止使用者看到 {{ variable }} 這樣的原始代碼。
+        */
+        [v-cloak] {
+            display: none !important;
         }
 
         /* 橫向滾動條樣式 (隱藏滾動條但保持滾動功能) */
@@ -116,7 +120,7 @@
 </head>
 <body class="milk-tea-bg p-4 sm:p-6">
 
-<div id="app">
+<div id="app" v-cloak>
     <main class="milk-tea-bg rounded-xl shadow-lg p-4 sm:p-6 min-h-[80vh]">
         
         <div v-if="!currentUser" class="flex flex-col items-center justify-center h-full py-10">
@@ -431,16 +435,14 @@
     </main>
 </div>
 
-
-
-
 <script type="module">
-    // ▼▼▼▼▼ 請從這裡開始替換 ▼▼▼▼▼
+    // ▼▼▼ 請在此處填入您的 Firebase 設定 ▼▼▼
     
-    // 1. 給您的 App 取個英文代號 (隨意，例如 'my-family-trip')
     const appId = 'my-family-trip'; 
 
-    // 2. 貼上您從 Firebase 後台複製來的設定
+    // 請將從 Firebase Console 複製的 config 貼在下方
+    // 注意：格式必須是 const firebaseConfig = { ... }; 
+    // 請檢查逗號和括號是否完整
     const firebaseConfig = {
         apiKey: "AIzaSyCrNe8ZxZCofC5mxlmkXJ-Jjr5bA19_B4I",
   authDomain: "trip-app-2026.firebaseapp.com",
@@ -451,13 +453,9 @@
   measurementId: "G-DDSMLPDLJP"
     };
 
-    // ▲▲▲▲▲ 替換結束 ▲▲▲▲▲
+    // ▲▲▲ 設定結束 ▲▲▲
 
     const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    // ... (後面不用動)
-
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -810,5 +808,88 @@
             };
 
             const resetSetup = async () => {
-                if (!
+                if (!isAdmin.value) return;
+                // 直接重設，不跳彈窗
+                await updateFirestore({ tripSettings: {}, itinerary: {}, userWallets: {} }, true);
+                isSetupComplete.value = false;
+                Object.assign(wizard.value, { appNameInput: '', destinationInput: '', rateInput: 0.22, startDateInput: '', endDateInput: '' });
+            }
 
+            // Global Data Holder
+            let globalDocData = null;
+
+            const loadUserData = () => {
+                if (!globalDocData || !currentUser.value) return;
+
+                // 載入特定家人的錢包
+                const myWalletData = globalDocData.userWallets && globalDocData.userWallets[currentUser.value] 
+                    ? globalDocData.userWallets[currentUser.value] 
+                    : { wallet: { initialTWD: 0, initialForeign: 0, currentTWD: 0, currentForeign: 0 }, transactions: [] };
+                    
+                wallet.value = myWalletData.wallet;
+                transactions.value = myWalletData.transactions || [];
+                recalculateWallet();
+            };
+
+            const initFirebase = async () => {
+                // Auto Login check
+                const savedUser = localStorage.getItem('myTripApp_currentUser');
+                if (savedUser && FAMILY_MEMBERS.includes(savedUser)) {
+                    currentUser.value = savedUser;
+                }
+
+                // 若 firebaseConfig 未正確設定 (還保留在預設值)，則不啟動 Firebase
+                if (!firebaseConfig || firebaseConfig.apiKey.includes("API_KEY")) {
+                    console.warn("Firebase Config not set!");
+                    isInitializing.value = false; 
+                    return; 
+                }
+
+                setLogLevel('error');
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                db = getFirestore(app);
+                
+                try { initialAuthToken ? await signInWithCustomToken(auth, initialAuthToken) : await signInAnonymously(auth); } catch {}
+                
+                tripDocRef = doc(db, `artifacts/${appId}/public/data/universal_trip_plan`, 'main_settings_and_itinerary');
+                
+                onSnapshot(tripDocRef, (docSnapshot) => {
+                    const data = docSnapshot.data();
+                    globalDocData = data; // Keep raw data for user switching
+
+                    if (docSnapshot.exists() && data?.tripSettings?.startDate) {
+                        tripSettings.value = data.tripSettings;
+                        itinerary.value = data.itinerary || {};
+                        isSetupComplete.value = true;
+                        
+                        // 如果已登入，載入該用戶資料
+                        if (currentUser.value) {
+                            loadUserData();
+                        }
+                    } else { 
+                        isSetupComplete.value = false; 
+                    }
+                    isInitializing.value = false;
+                    renderLucideIcons(); 
+                }, () => isInitializing.value = false);
+            };
+
+            const renderLucideIcons = () => nextTick(() => typeof lucide !== 'undefined' && lucide.createIcons());
+            watch([itinerary, transactions], renderLucideIcons, { deep: true });
+            onMounted(() => { initFirebase(); watch(tripSettings, (s) => newTransaction.value.currency = s.currency, { immediate: true, deep: true }); });
+
+            return { 
+                isInitializing, currentUser, isAdmin, FAMILY_MEMBERS, loginAs, logout, getAvatar,
+                appTitle, activeTab, wallet, newTransaction, isTransactionValid, addTransaction, filteredTransactions, editingTxId, editingTransaction, editTransaction, cancelEdit, saveEdit, deleteTransaction, 
+                isSetupComplete, wizard, detectedSettings, isWizardValid, saveInitialSetup, resetSetup, 
+                tripSettings, itinerary, toggleMapPin, foreignInput, twdOutput, twdInput, foreignOutput, updateExchangeRate, currentLocation, mapLocations, mapUrl, tripDays, selectedDate, selectedDateDisplay, addNewItem, editItem, saveItem, deleteItem, getSingleMapLink,
+                budgetSetup, budgetSetupCalculated, initializeWallet, isWalletUninitialized
+            };
+        }
+    };
+    Vue.createApp(App).mount('#app');
+</script>
+
+</body>
+</html>
